@@ -1,0 +1,196 @@
+name: gate-membership
+
+# Faithful replica of the `check_membership` job of ethereum/pm
+# .github/workflows/protocol-call-workflow.yml (sha256 64b139928fff...).
+# Only deviation: `const username = context.actor;` is replaced with
+#   `const username = process.env.SIMULATED_ACTOR || context.actor;`
+# so a username other than the dispatching account can be evaluated.
+
+on:
+  workflow_dispatch:
+    inputs:
+      actor:
+        description: "Username evaluated in place of context.actor"
+        required: true
+        default: "mathhhewkeil"
+
+permissions:
+  contents: read
+
+jobs:
+  check_membership:
+    runs-on: ubuntu-latest
+    outputs:
+      is_member: ${{ steps.set_output.outputs.is_member }}
+    steps:
+      - name: Echo evaluated actor
+        env:
+          SIMULATED_ACTOR: ${{ inputs.actor }}
+        run: echo "SIMULATED_ACTOR=$SIMULATED_ACTOR context.actor=${{ github.actor }}"
+
+      - name: Check Organization Membership
+        id: check_org_membership
+        uses: actions/github-script@v8
+        env:
+          SIMULATED_ACTOR: ${{ inputs.actor }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+                        // Check if the user is a member of ethereum or ethcatherders orgs
+                        let is_member = false;
+                        const username = process.env.SIMULATED_ACTOR || context.actor; // PoC deviation
+
+                        // Define trusted contributors list once at the beginning
+                        const trustedContributors = [
+                          "poojaranjan", "adietrichs", "carlbeek", "timbeiko", "nconsigny",
+                          "justindrake", "vbuterin", "hwwhww", "mathhhewkeil", "jrudolf",
+                          "soispoke", "pipermerriam", "potuz", "will-corcoran", "ralexstokes",
+                          "samwilsn", "shemnon", "nixorokish", "dcrapis", "gabrocheleau",
+                          "joshdavislight", "nerolation", "jihoonsong", "bomanaps", "misilva73",
+                          "zsfelfoldi", "kevaundray", "jflo", "gcolvin", "asanso", "mkalinin",
+                          "tcoratger", "kamilsa", "ladidan", "dionysuzx", "kclowes", "RazorClient",
+                          "wolovim", "jsign", "lightclient"
+                        ];
+
+                        console.log(`Checking membership for user: ${username}`);
+
+                        try {
+                          // Try multiple methods to check membership to be thorough
+
+                          // First, try direct membership check - this only works for public members or if token has sufficient permissions
+                          async function checkDirectMembership(org, user) {
+                            try {
+                              await github.rest.orgs.checkMembershipForUser({
+                                org: org,
+                                username: user
+                              });
+                              return true;
+                            } catch (error) {
+                              console.log(`Direct membership check for ${user} in ${org} failed: ${error.message}`);
+                              return false;
+                            }
+                          }
+
+                          // Next, try to get both public and private members
+                          async function getAllOrgMembers(org) {
+                            const members = new Set();
+                            const perPage = 100; // Maximum allowed
+
+                            // Get public members
+                            try {
+                              console.log(`Fetching public members for ${org}...`);
+                              for await (const response of github.paginate.iterator(
+                                github.rest.orgs.listPublicMembers,
+                                { org, per_page: perPage }
+                              )) {
+                                for (const member of response.data) {
+                                  members.add(member.login.toLowerCase());
+                                }
+                              }
+                              console.log(`Found ${members.size} public members in ${org}`);
+                            } catch (error) {
+                              console.log(`Error fetching public members for ${org}: ${error.message}`);
+                            }
+
+                            // Get all members (includes private, if token has permissions)
+                            try {
+                              console.log(`Fetching all members for ${org}...`);
+                              for await (const response of github.paginate.iterator(
+                                github.rest.orgs.listMembers,
+                                { org, per_page: perPage }
+                              )) {
+                                for (const member of response.data) {
+                                  members.add(member.login.toLowerCase());
+                                }
+                              }
+                              console.log(`Found total of ${members.size} members in ${org} (public + private that token can see)`);
+                            } catch (error) {
+                              console.log(`Error fetching all members for ${org}: ${error.message}`);
+                            }
+
+                            return Array.from(members);
+                          }
+
+                          // Check Ethereum org
+                          console.log('Checking ethereum organization membership...');
+                          if (await checkDirectMembership('ethereum', username)) {
+                            console.log(`✅ ${username} is confirmed as a member of ethereum org via direct API check`);
+                            is_member = true;
+                          } else {
+                            const ethereumMembers = await getAllOrgMembers('ethereum');
+                            console.log(`Collected ${ethereumMembers.length} ethereum members to check against`);
+
+                            if (ethereumMembers.includes(username.toLowerCase())) {
+                              console.log(`✅ ${username} is a member of ethereum org`);
+                              is_member = true;
+                            } else {
+                              console.log(`❌ ${username} is not found in ethereum org member list`);
+                            }
+                          }
+
+                          // If not in ethereum, check ethcatherders org
+                          if (!is_member) {
+                            console.log('Checking ethcatherders organization membership...');
+                            if (await checkDirectMembership('ethcatherders', username)) {
+                              console.log(`✅ ${username} is confirmed as a member of ethcatherders org via direct API check`);
+                              is_member = true;
+                            } else {
+                              const catMembers = await getAllOrgMembers('ethcatherders');
+                              console.log(`Collected ${catMembers.length} ethcatherders members to check against`);
+
+                              if (catMembers.includes(username.toLowerCase())) {
+                                console.log(`✅ ${username} is a member of ethcatherders org`);
+                                is_member = true;
+                              } else {
+                                console.log(`❌ ${username} is not found in ethcatherders org member list`);
+                              }
+                            }
+                          }
+
+                          // Fallback to a list of trusted contributors if not in either org
+                          if (!is_member) {
+                            if (trustedContributors.includes(username.toLowerCase())) {
+                              console.log(`✅ ${username} is in the trusted contributors list`);
+                              is_member = true;
+                            } else {
+                              console.log(`❌ ${username} is not in the trusted contributors list`);
+                            }
+                          }
+
+                          console.log(`Final membership determination for ${username}: ${is_member ? 'Approved ✅' : 'Not approved ❌'}`);
+                        } catch (error) {
+                          console.log(`Error in membership check: ${error.message}`);
+                          console.log(`Stack trace: ${error.stack}`);
+
+                          // If we're here, something went wrong with the API checks
+                          // Check if user is in trusted list as a fallback
+                          if (trustedContributors.includes(username.toLowerCase())) {
+                            console.log(`✅ FALLBACK: ${username} is in the trusted contributors list`);
+                            is_member = true;
+                          }
+                        }
+
+                        return is_member;
+
+      - name: Set output
+        id: set_output
+        run: echo "is_member=${{ steps.check_org_membership.outputs.result }}" >> $GITHUB_OUTPUT
+
+      - name: Report
+        run: |
+          echo "check_membership.outputs.is_member=${{ steps.set_output.outputs.is_member }}"
+          echo "context.actor=${{ github.actor }}"
+
+  privileged:
+    needs: check_membership
+    if: needs.check_membership.outputs.is_member == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: PRIVILEGED - stands in for handle_protocol_call
+        env:
+          SIMULATED_ACTOR: ${{ inputs.actor }}
+        run: |
+          echo "PRIVILEGED JOB EXECUTED for evaluated actor=$SIMULATED_ACTOR"
+          echo "In ethereum/pm this job has actions/checkout, 20 org secrets and contents:write"
